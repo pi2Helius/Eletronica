@@ -38,12 +38,14 @@ int main(void)
 	
 	while(1){
 
-        signal(SIGINT, ctrl_c);
+        //Configurando comunicação i2c
+	signal(SIGINT, ctrl_c);
         i2c_fd = open("/dev/i2c-1", O_RDWR);
         ioctl(i2c_fd, I2C_SLAVE, slave_addr);
 
         int i=0;
-        //while(i==0){
+        
+	//Comunicação I2C com a MSPA	
         for(int cont=1;cont<=7;cont++)
         {
                 user_input = cont;
@@ -62,7 +64,6 @@ int main(void)
                         ldr_100=a4*resoluc;
                         printf("Valor do sensor em A4 (LDR) é: %.2f\n", a4);
 			printf("Valor ldr_100 : %.2f\n", ldr_100);
-			//printf("krad*ldr_100 = %.2f\n", krad*ldr_100);
                 }
                 else if (cont==3){
                         a3=msp430_ret*(1023/255);
@@ -97,7 +98,8 @@ int main(void)
         signal(SIGINT, ctrl_c);
         i2c_fd = open("/dev/i2c-1", O_RDWR);
         ioctl(i2c_fd, I2C_SLAVE, slave_addr2);
-
+	
+	//Configuração I2C com a MSPB
         for(int cont2=1;cont2<=6;cont2++)
         {
                 user_input2 = cont2;
@@ -147,7 +149,8 @@ int main(void)
         }
 
         close(i2c_fd);
-
+	
+	//Calculo para irradiação a partir dos dados obtidos nos LDRs
 	if(1.93<ldr_1k<3.33){
 		G = (47.5*(ldr_1k*ldr_1k)) - (4.4*(100)*ldr_1k) + 1048;
 	}
@@ -170,6 +173,7 @@ int main(void)
 	G=1000-G;
 	printf("Irradiação estimada: %.2f\n", G);
 	
+	//Faixas do UV Index
 	if(uv_sensor<0.05){
 		uv_index=0;
 		uv_irad=uv_index/40;
@@ -232,6 +236,7 @@ int main(void)
 	FILE * fp; //int x[5] = {0,1,2,5,5};
 	fp = fopen ("file.csv", "w+");
         
+	//Escrevendo os dados no arquivo file.csv
         fprintf(fp, "TEMP_REFLETOR,TEMP_PFRIO,IRRAD_LDR,IRRAD_UV,VBAT,VGER,IBAT,IGER,ROT,TEMP_PQUENTE,GPS_LAT,GPS_LONG\n");
         fprintf(fp, "%f,%f,%f,%f,%f,%f,%f,%f,%f,",media_temp,a0,G,uv_irad,divt1,divt2,corbat,corgerad,rot);
         fclose(fp);
@@ -242,7 +247,7 @@ int main(void)
 
         char command[50];
 
-        strcpy(command, "python3 read_gps.py");//"python3 read_gps.py" ); //test.py
+        strcpy(command, "python3 read_gps.py");
         system(command);
 
 	char comanddate[50];
