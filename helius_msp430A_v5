@@ -1,0 +1,207 @@
+//PI2 - Prótipo de Gerador Heliotérmico
+//Código da MSP430 A (REFLETOR) realizado pelo grupo do Gerador Helius
+
+//Inclusão de bibliotecas
+#include <msp430g2553.h>
+#include <legacymsp430.h> //Biblioteca para facilitar a chamada das interrupções
+
+//Definição de constantes
+#define ADC_CHANNELS 6 //Definindo a quantidade de canais AD a serem lidos
+#define SCL BIT6       //Definição da porta para comunicação I2C
+#define SDA BIT7       //Definição da porta para comunicação I2C
+#define DLY 0x6000     //Configuração para I2C
+#define HALL BIT3      //Porta de entrada do sensor de efeito HALL
+
+//Declaração de variáveis globais
+int samples[ADC_CHANNELS]; //Vetor para guardar o valor do registrador ADC10MEM
+int rpm_count=0, rpm_timer=0, rpm_ctl=0, rpm_ctl_timer=0, rpm=0;
+int cachorron_snack=0;
+
+//Cabeçalhos das funções utilizadas
+void Init_P2(void);
+void Init_AD(void);
+void delay_ms(unsigned int ms);
+void delay_us(unsigned int us);
+
+int main(void)
+{
+  WDTCTL = WDTPW + WDTHOLD;  //Parar o cachorrão
+  BCSCTL1 = CALBC1_1MHZ;     //setando o clock da cpu em 1MHZ
+  DCOCTL = CALDCO_1MHZ;      //setando o clock da cpu em 1MHZ
+  TA0CCR0 = 64000-1;         //Valor do contador do Timer A0
+  TA0CTL = TASSEL_2 + ID_3 + MC_1 + TAIE;  //Registrador do controle do Timer A0
+  TA1CCR0 = 1000-1;          //Valor do contador do Timer A0
+  TA1CTL = TASSEL_2 + ID_3 + MC_1 + TAIE;  //Registrador do controle do Timer A1 utilizado no cáculo do RPM
+
+//Resetando a Flag do Cachorrão
+   if(IFG1 & WDTIFG){ 
+    IFG1 &= ~WDTIFG;
+  }
+  
+  Init_P2();  //Inicializando a Porta P2
+  Init_AD();  //Inicializando as Portas Analógicas
+  init_I2C(0xF);  //Inicia comunicação I2C com endereço 0xF
+  
+  _BIS_SR(LPM0_bits+GIE); //Modo de baixo consumo com interrupções habilitadas
+  return 0;
+}
+
+//Rotina de Tratamento da Interrupção do Timer A1 para cálculo do RPM
+interrupt(TIMER1_A1_VECTOR) TA1_ISR(void)
+{
+  TA1CTL &= ~TAIFG; //Reseta a Flag do Timer A
+  if(rpm_ctl_timer==1){
+     rpm_timer++;
+  }
+}
+
+//Rotina de Tratamento da Interrupção do Timer A
+interrupt(TIMER0_A1_VECTOR) TA0_ISR(void)
+{
+
+  TA0CTL &= ~TAIFG; //Reseta a Flag da interrupção
+  // Manda comecar uma conversao
+  ADC10CTL0 &= ~ENC;                    // Abilitando o adc
+  while (ADC10CTL1 & BUSY);
+  ADC10SA = (unsigned int)samples;      //salvando as leituras no vetor
+  ADC10CTL0 |= ENC + ADC10SC;           //Iniciando a leitura dos valores AD
+  if(cachorron_snack>9){
+     WDTCTL = WDTPW + WDTCNTCL; //Liga o cachorrão para reiniciar a MSP430
+     cachorron_snack=0;
+  } 
+  cachorron_snack++;
+}
+
+//Interrupção da porta P2 para cálculo do RPM
+interrupt(PORT2_VECTOR) Interrupcao_P2(void)
+{
+  //P1OUT ^= BIT6;
+  P2IFG &= ~HALL;
+  if (rpm_ctl==0){
+    rpm_ctl=1;
+    rpm_count=0;
+    rpm_timer=0;
+  }
+  if(rpm_ctl==1){
+    rpm_ctl_timer=1;
+    rpm_count++;
+    if(rpm_count>=50){
+      rpm_ctl=0;
+      rpm_ctl_timer=0;
+      rpm=60000/rpm_count*rpm_timer;
+      rpm=rpm/10;
+      rpm_count=0;
+      rpm_timer=0;
+      //P1OUT ^= BIT0;
+    }
+  }
+}
+
+//Configuração da Porta P2
+void Init_P2(void)
+{
+  //P2DIR |= HALL;
+  P2DIR &= ~HALL;
+  P2IE |= HALL;
+  P2IES |= HALL;
+  P2IFG &= ~HALL;
+}
+
+//Configuração dos Registradores do AD
+void Init_AD(void)
+{
+  //ADC10CTL0 = Control Parameters; ADC10SHT_2 = Sample and Hold time clock cycles(2=16 clock cycles); MSC = Multiple Samples; ADC10ON = Ativa o ADC10
+  ADC10CTL0 = ADC10SHT_2 + SREF_0 + MSC + ADC10ON;
+  //INCH_5 = Porta A5 para inicio das conversões; CONSEQ_1 = Sequence of channels converted once; ADC10DIV+0 = ADC10 clock divider; ADC10SSEL_3 = ADC10 clock source; SHS_0 = Sample and Hold source Select
+  ADC10CTL1 = INCH_5 + CONSEQ_1 + ADC10DIV_0 + ADC10SSEL_3 + SHS_0;
+  //ADC10 data transfer channels; Tem que ser o mesmo número de entradas analógicas
+  ADC10DTC1 = ADC_CHANNELS;
+  //Máscara para os pinos analógicos.
+  ADC10AE0 |= BIT5+BIT4+BIT3+BIT2+BIT1+BIT0;
+}
+
+//delay
+void delay_ms(unsigned int ms)
+{
+  while (ms)
+  {
+    __delay_cycles(1000); 
+    ms--;
+  }
+}
+
+void delay_us(unsigned int us)
+{
+  while (us)
+  {
+    __delay_cycles(1); 
+    us--;
+  }
+}
+
+//I2C
+void Atraso(volatile unsigned int x)
+{
+  while(x--);
+}
+
+void Send_Data(volatile unsigned char c)
+{
+  while((IFG2&UCA0TXIFG)==0);
+  UCA0TXBUF = c;
+}
+
+void init_I2C(volatile unsigned int slave_address)
+{
+  UCB0CTL1 |= UCSWRST;                      
+  UCB0CTL1 &= ~UCTR;
+  UCB0CTL0 = UCMODE_3 + UCSYNC;             
+  UCB0I2COA = slave_address; //|UCGCEN;
+  P1SEL |= SCL | SDA;                       // Conecta internamente os pinos definidos da comunicação i2c ao registrador USCI_B0
+  P1SEL2|= SCL | SDA;                      
+  UCB0STAT &= ~(UCSTPIFG | UCSTTIFG);
+  UCB0CTL1 &= ~UCSWRST;                     // reseta o registrador SW
+  IE2 |= UCB0RXIE;  //Permite a interrupção no recebimento via i2c
+  
+}
+
+void Transmit(float data)
+{ 
+    while((IFG2 & UCB0TXIFG)==0);
+    UCB0TXBUF = data;
+}
+
+interrupt(USCIAB0TX_VECTOR) USCIAB0TX_ISR(void)
+{
+  int d;
+  int retorna;
+  if(IFG2 & UCB0RXIFG)
+  {
+    d = UCB0RXBUF;
+    if(d==1){
+        retorna=samples[0]/(1023/255);
+    }
+    else if(d==2){
+        retorna = (float)samples[1]/(1023/255);
+    }
+    else if(d==3){
+        retorna = (float)samples[2]/(1023/255);
+    }
+    else if(d==4){
+        retorna = (float)samples[3]/(1023/255);
+    }
+    else if(d==5){
+        retorna = (float)samples[4]/(1023/255);
+    }
+    else if(d==6){
+        retorna = (float)samples[5]/(1023/255);
+    }
+    else if(d==7){
+        retorna = rpm/(1023/255);
+    }
+    while( (UCB0STAT & UCSTTIFG)==0);
+    Transmit(retorna);
+    UCB0STAT &= ~(UCSTPIFG | UCSTTIFG);
+  }
+  IFG2 &= ~(UCB0TXIFG|UCB0RXIFG);
+}
