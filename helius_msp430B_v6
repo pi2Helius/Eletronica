@@ -1,0 +1,196 @@
+//PI2 - Prótipo de Gerador Heliotérmico
+//Código da MSP430 B (BASE) realizado pelo grupo do Gerador Helius
+
+//inclusão de bibliotecas
+#include <msp430g2553.h>
+#include <legacymsp430.h> //biblioteca para facilitar a chamada das interrupções
+
+//Definição de constantes
+#define ADC_CHANNELS 6 //Definindo a quantidade de canais AD a serem lidos
+#define SCL BIT6       //Definição da porta para comunicação I2C
+#define SDA BIT7       //Definição da porta para comunicação I2C
+#define DLY 0x6000     //Configuração para I2C
+#define stepper BIT2+BIT3+BIT4; //Definição dos pinos de controle do motor de passo
+#define EN BIT4;
+#define DIR BIT3;
+#define PUL BIT2;
+#define fc_home BIT0;           //Definição dos pinos para instalação de fim de curso (se necessário)
+#define fc_work BIT1;
+#define fc_bits BIT0+BIT1;
+
+//Declaração de Variáveis Globais
+int samples[ADC_CHANNELS]; //Vetor para guardar o valor do registrador
+int buffer_stepper=0, fc_step_home=0, fc_step_work=0;
+int cachorron_snack=0;
+
+//Declaração dos cabeçalhos das funções
+void Init_P2(void);
+void Init_AD(void);
+void delay_ms(unsigned int ms);
+void delay_us(unsigned int us);
+
+int main(void)
+{
+  WDTCTL = WDTPW + WDTHOLD;  //Parar o cachorrão
+  BCSCTL1 = CALBC1_1MHZ;    //setando o clock da cpu em 1MHZ
+  DCOCTL = CALDCO_1MHZ;
+  TA0CCR0 = 64000-1;   //Valor do contador do Timer A0
+  TA0CTL = TASSEL_2 + ID_3 + MC_1 + TAIE;  //Registrador do controle do Timer A0
+
+  Init_P2();  //Inicializando a Porta P2 
+  Init_AD();  //Inicializando as Portas Analógicas
+  init_I2C(0xA); //Inicia comunicação I2C com endereço 0xA
+  //Resetando a Flag do Cachorrão
+  if(IFG1 & WDTIFG){ 
+    IFG1 &= ~WDTIFG;
+  }
+  _BIS_SR(LPM0_bits+GIE); //Modo de baixo consumo com interrupções habilitadas
+  return 0;
+}
+
+//Rotina de Tratamento da Interrupção do Timer A0
+interrupt(TIMER0_A1_VECTOR) TA0_ISR(void)
+{
+  TA0CTL &= ~TAIFG; //Reseta a Flag da interrupção
+  ADC10CTL0 &= ~ENC;                    // Abilitando o adc
+  while (ADC10CTL1 & BUSY);
+  ADC10SA = (unsigned int)samples;      //salvando as leituras no vetor
+  ADC10CTL0 |= ENC + ADC10SC;           // Manda comecar uma conversao
+  buffer_stepper++;                     //delay para acionamento do motor de passo
+
+  if(cachorron_snack>13){
+     WDTCTL = WDTPW + WDTCNTCL;         //Liga o cachorrão para reiniciar a MSP430
+     cachorron_snack=0;
+  } 
+  cachorron_snack++;
+
+  //CONTROLE MOTOR DE PASSO
+  if(((samples[1]-samples[0])>38) && (buffer_stepper>=5)){ //valor provável de usar 38 e 8 respectivamente para noite com lanterna; 
+     P2OUT &= ~EN; //ativa o driver
+     P2OUT |= DIR; //Seleciona o sentido horário;
+     for(int x =0; x <40; x++){ //Executa 40 passos;
+      P2OUT |= PUL;
+      delay_us(2000);
+      P2OUT &= ~PUL;
+      delay_us(2000);
+      //2000 2000 110100 ***
+     
+     }
+     P2OUT |= EN; //desativa o driver
+     buffer_stepper=0;
+  }
+  if(((samples[0]-samples[1])>100) && (buffer_stepper>=5)){ //valor provável de usar ou 250 e 8 respectivamente para noite com lanterna
+     P2OUT &= ~EN; //ativa o driver
+     P2OUT &= ~DIR; //Seleciona o sentido anti-horário;
+     for(int x =0; x <40; x++){
+        P2OUT |= PUL;
+        delay_us(2000);
+        P2OUT &= ~PUL;
+        delay_us(2000);
+      }
+     P2OUT |= EN; //desativa o driver
+     buffer_stepper=0;
+  }
+}
+
+void Init_P2(void)
+{
+  P2DIR |= stepper;
+}
+
+void Init_AD(void)
+{
+  //ADC10CTL0 = Control Parameters; ADC10SHT_2 = Sample and Hold time clock cycles(2=16 clock cycles); MSC = Multiple Samples; ADC10ON = Ativa o ADC10
+  ADC10CTL0 = ADC10SHT_2 + SREF_0 + MSC + ADC10ON;
+  //INCH_5 = Porta A5 para inicio das conversões; CONSEQ_1 = Sequence of channels converted once; ADC10DIV+0 = ADC10 clock divider; ADC10SSEL_3 = ADC10 clock source; SHS_0 = Sample and Hold source Select
+  ADC10CTL1 = INCH_5 + CONSEQ_1 + ADC10DIV_0 + ADC10SSEL_3 + SHS_0;
+  //ADC10 data transfer channels; Tem que ser o mesmo número de entradas analógicas
+  ADC10DTC1 = ADC_CHANNELS;
+  //Máscara para os pinos analógicos.
+  ADC10AE0 |= BIT5+BIT4+BIT3+BIT2+BIT1+BIT0;
+
+}
+
+//delay
+void delay_ms(unsigned int ms)
+{
+  while (ms)
+  {
+    __delay_cycles(1000); 
+    ms--;
+  }
+}
+
+void delay_us(unsigned int us)
+{
+  while (us)
+  {
+    __delay_cycles(1); 
+    us--;
+  }
+}
+
+//I2C
+void Atraso(volatile unsigned int x)
+{
+  while(x--);
+}
+
+void Send_Data(volatile unsigned char c)
+{
+  while((IFG2&UCA0TXIFG)==0);
+  UCA0TXBUF = c;
+}
+
+
+void init_I2C(volatile unsigned int slave_address)
+{
+  UCB0CTL1 |= UCSWRST;                     
+  UCB0CTL1 &= ~UCTR;
+  UCB0CTL0 = UCMODE_3 + UCSYNC;             
+  UCB0I2COA = slave_address; 
+  P1SEL |= SCL | SDA;                        // Conecta internamente os pinos definidos da comunicação i2c ao registrador USCI_B0
+  P1SEL2|= SCL | SDA;                       
+  UCB0STAT &= ~(UCSTPIFG | UCSTTIFG);
+  UCB0CTL1 &= ~UCSWRST;                     
+  IE2 |= UCB0RXIE;         //Permite a interrupção no recebimento via i2c 
+}
+
+//void Transmit(char data[], int len)
+void Transmit(float data)
+{
+    while((IFG2 & UCB0TXIFG)==0);
+    UCB0TXBUF = data;
+}
+
+interrupt(USCIAB0TX_VECTOR) USCIAB0TX_ISR(void)
+{
+  int d;
+  int retorna;
+  if(IFG2 & UCB0RXIFG)
+  {
+    d = UCB0RXBUF;
+    if(d==1){
+        retorna=samples[0]/(1023/255);
+    }
+    else if(d==2){
+        retorna = (float)samples[1]/(1023/255);
+    }
+    else if(d==3){
+        retorna = (float)samples[2]/(1023/255);
+    }
+    else if(d==4){
+        retorna = (float)samples[3]/(1023/255);
+    }
+    else if(d==5){
+        retorna = (float)samples[4]/(1023/255);
+    }
+    else if(d==6){
+        retorna = (float)samples[5]/(1023/255);
+    }
+    while( (UCB0STAT & UCSTTIFG)==0);
+    Transmit(retorna);
+    UCB0STAT &= ~(UCSTPIFG | UCSTTIFG);
+  }
+  IFG2 &= ~(UCB0TXIFG|UCB0RXIFG);
+}
